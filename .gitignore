@@ -3,6 +3,14 @@
 # Learn more about .gitignore:
 #     https://www.atlassian.com/git/tutorials/saving-changes/gitignore
 
+# target binary
+socks_server
+hw4.cgi
+socks.conf
+
+# vscode file
+.vscode
+
 # Node artifact files
 node_modules/
 dist/
