@@ -72,7 +72,8 @@ class server
 {
 public:
   server(boost::asio::io_context& io_context, short port)
-    : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
+    : io_context_(io_context),
+      acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
       signal_(io_context, SIGCHLD)
   {
     wait_for_signal();
@@ -100,13 +101,34 @@ private:
       [this](boost::system::error_code ec, tcp::socket socket)
       {
         if (!ec) {
-          std::make_shared<session>(std::move(socket))->start();
-        }
+          pid_t pid;
 
-        do_accept();
+          io_context_.notify_fork(boost::asio::io_context::fork_prepare);
+
+          if ((pid = fork())) {
+            // Parent
+            io_context_.notify_fork(boost::asio::io_context::fork_parent);
+            socket.close();
+            do_accept();
+          } else if (pid == 0) {
+            // Child
+            io_context_.notify_fork(boost::asio::io_context::fork_child);
+            signal_.cancel();
+            acceptor_.close();
+            std::make_shared<session>(std::move(socket))->start();
+          } else {
+            // Error
+            cerr << "[x] Fork error" << endl;
+            exit(1);
+          }
+        } else {
+          cerr << "[x] Accept error" << endl;
+          do_accept();
+        }
       });
   }
 
+  boost::asio::io_context& io_context_;
   tcp::acceptor acceptor_;
   boost::asio::signal_set signal_;
 };
