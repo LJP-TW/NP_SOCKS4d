@@ -16,6 +16,8 @@
 #include <vector>
 #include <sys/wait.h>
 #include <unordered_map>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 #include <boost/asio.hpp>
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
@@ -40,7 +42,8 @@ class session
 {
 public:
   session(tcp::socket socket, boost::asio::io_context& io_context)
-    : client_socket_(std::move(socket)),
+    : io_context_(io_context),
+      client_socket_(std::move(socket)),
       server_socket_(io_context),
       resolver_(boost::asio::make_strand(io_context))
   {
@@ -55,9 +58,9 @@ private:
   void debug_dump(char *data, int length) {
     int cnt = 0;
     int i = 0;
-    cout << length << endl;
+    cout << "[debug] Length: " << length << endl;
     for (; i < length; ++i) {
-      printf("%02x ", data[i]);
+      printf("%02x ", (BYTE)data[i]);
       cnt += 1;
       if (cnt == 0x10) {
         printf(" | ");
@@ -87,6 +90,18 @@ private:
     cout << endl;
   }
 
+  WORD int_to_port(int port) {
+    return ((port & 0xff00) >> 8) | ((port & 0xff) << 8);
+  }
+
+  DWORD ip_to_dword(string ip) {
+    struct sockaddr_in sa;
+    
+    inet_pton(AF_INET, ip.c_str(), &(sa.sin_addr));
+
+    return sa.sin_addr.s_addr;
+  }
+
   void do_handle_SOCKS4_request()
   {
     auto self(shared_from_this());
@@ -101,8 +116,6 @@ private:
           char *domain_name;
           char s_port[0x8] = { 0 };
 
-          cout << length << endl;
-
           debug_dump(data_, length);
 
           // Parse SOCKS4_REQUEST
@@ -112,6 +125,12 @@ private:
           }
 
           vn = data_[0];
+
+          if (vn != 4) {
+            cout << "[!] Unexpected SOCKS4_REQUEST: VN error" << endl;
+            return;
+          }
+
           cd_ = data_[1];
 
           // Big endian
@@ -124,44 +143,86 @@ private:
           
           sprintf(s_port, "%d", dstport);
 
-          if (cd_ == 1) {
-            // CONNECT
+          // Recognize SOCKS4/4A
+          if ((dstip & 0x00ffffff) == 0) {
+            cout << "[*] SOCKS4A request" << endl;
 
-            // Recognize SOCKS4/4A
-            if ((dstip & 0x00ffffff) == 0) {
-              cout << "[*] SOCKS4A request" << endl;
+            int idx = 8 + strlen(userid) + 1;
 
-              int idx = 8 + strlen(userid) + 1;
-
-              if (idx >= (int)length) {
-                cout << "[!] Unexpected SOCKS4A_REQUEST: USERID error" << endl;
-                return;
-              }
-
-              domain_name = &data_[idx];
-
-              cout << domain_name << ":" << s_port << endl;
-
-              do_resolve(domain_name, s_port);
-            } else {
-              cout << "[*] SOCKS4  request" << endl;
-
-              // Turn dstip from int to IP string (xxx.xxx.xxx.xxx)
-              char s_dstip[0x10] = { 0 };
-
-              sprintf(s_dstip, "%d.%d.%d.%d", 
-                      (dstip) & 0xff,
-                      (dstip >> 0x8) & 0xff,
-                      (dstip >> 0x10) & 0xff,
-                      (dstip >> 0x18) & 0xff);
-
-              cout << s_dstip << ":" << s_port << endl;
-
-              do_resolve(s_dstip, s_port);
+            if (idx >= (int)length) {
+              cout << "[!] Unexpected SOCKS4A_REQUEST: USERID error" << endl;
+              return;
             }
-          } else if (cd_ == 2) {
-            // BIND
+
+            domain_name = &data_[idx];
+
+            cout << domain_name << ":" << s_port << endl;
+
+            do_resolve(domain_name, s_port);
+          } else {
+            cout << "[*] SOCKS4  request" << endl;
+
+            // Turn dstip from int to IP string (xxx.xxx.xxx.xxx)
+            char s_dstip[0x10] = { 0 };
+
+            sprintf(s_dstip, "%d.%d.%d.%d", 
+                    (dstip) & 0xff,
+                    (dstip >> 0x8) & 0xff,
+                    (dstip >> 0x10) & 0xff,
+                    (dstip >> 0x18) & 0xff);
+
+            cout << s_dstip << ":" << s_port << endl;
+
+            do_resolve(s_dstip, s_port);
           }
+        }
+      });
+  }
+
+  void do_bind()
+  {
+    auto self(shared_from_this());
+
+    int port = 0x5566;
+    DWORD proxy_ip;
+
+    reply_cnt_ = 0;
+
+    proxy_ip = ip_to_dword(client_socket_.local_endpoint().address().to_string());
+
+    while (true) {
+      try {
+        p_acceptor_ = new tcp::acceptor(io_context_, tcp::endpoint(tcp::v4(), port));
+        break;
+      } 
+      catch (std::exception& e)
+      {
+        port += 1;
+      }
+    }
+
+    // Reply client which port to use
+    do_SOCKS4_reply(1, int_to_port(port), proxy_ip);
+
+    p_acceptor_->async_accept(
+      [this, self, port, proxy_ip](boost::system::error_code ec, tcp::socket socket)
+      {
+        if (!ec) {
+          // Verify the incoming end point is what it should be
+          if (server_endpoint_.address().to_string() != socket.remote_endpoint().address().to_string()) {
+            cout << "[X] BIND - Other server connected (" << socket.remote_endpoint() << ")" << endl;
+            return;
+          }
+          
+          cout << "[O] BIND - Server connected (" << server_endpoint_ << ")" << endl;
+          
+          server_socket_ = tcp::socket(std::move(socket));
+
+          // Ok, send reply to client
+          // Start proxing data from server to client
+          do_SOCKS4_reply(1, int_to_port(port), proxy_ip);
+        } else {
+          cout << "[x] BIND Accept error: " << ec << endl;
         }
       });
   }
@@ -182,9 +243,16 @@ private:
 
           cout << "[O] Resolve OK (" << server_endpoint_ << ")" << endl;
 
-          do_connect();
+          if (cd_ == 1) {
+            // CONNECT
+            do_connect();
+          } else if (cd_ == 2) {
+            // BIND
+            do_bind();
+          }
         } else {
           cout << "[!] Resolve failed" << endl;
+          do_SOCKS4_reply(0, 0, 0);
         }
       });
   }
@@ -198,38 +266,46 @@ private:
       {
         if (!ec) {
           cout << "[O] Connect OK (" << server_endpoint_ << ")" << endl;
-
-          if (cd_ == 1) {
-            // CONNECT
-            do_SOCKS4_reply(1);
-          } else if (cd_ == 2) {
-            // BIND
-          }
+          do_SOCKS4_reply(1, 0, 0);
         } else {
           cout << "[!] Connect failed (" << server_endpoint_ << ")" << endl;
-          do_SOCKS4_reply(0);
+          do_SOCKS4_reply(0, 0, 0);
         }
       });
   }
 
-  void do_SOCKS4_reply(int ok) {
+  void do_SOCKS4_reply(int ok, WORD dstport, DWORD dstip) {
     auto self(shared_from_this());
 
     SOCKS4_REPLY reply;
 
     reply.vn = 0;
     reply.cd = ok ? 90 : 91;
-    reply.dstport = 0;
-    reply.dstip = 0;
+    reply.dstport = dstport;
+    reply.dstip = dstip;
 
     debug_dump((char *)&reply, sizeof(reply));
 
     boost::asio::async_write(client_socket_, boost::asio::buffer((char *)&reply, sizeof(reply)),
-      [this, self](boost::system::error_code ec, std::size_t /*length*/) {
+      [this, self, ok](boost::system::error_code ec, std::size_t /*length*/) {
         if (!ec) {
           cout << "[O] Reply OK (" << server_endpoint_ << ")" << endl;
-          do_client_read();
-          do_server_read();
+          
+          if (ok) {
+            if (cd_ == 1) {
+              // CONNECT
+              do_client_read();
+              do_server_read();
+            } else if (cd_ == 2) {
+              // BIND
+              ++reply_cnt_;
+
+              if (reply_cnt_ == 2) {
+                do_client_read();
+                do_server_read();
+              }
+            }
+          }
         } else {
           cout << "[!] Reply failed (" << server_endpoint_ << ")" << endl;
         }
@@ -292,14 +368,17 @@ private:
       });
   }
 
+  boost::asio::io_context& io_context_;
   tcp::socket client_socket_;
   tcp::socket server_socket_;
   enum { max_length = 1024 };
   char data_[max_length];
   char data2_[max_length];
   BYTE cd_;
+  BYTE reply_cnt_;
   tcp::resolver resolver_;
   tcp::endpoint server_endpoint_;
+  tcp::acceptor *p_acceptor_;
 };
 
 class server
