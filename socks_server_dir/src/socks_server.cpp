@@ -322,6 +322,7 @@ private:
           do_server_write(length);
         } else {
           cout << "[!] (Client) Read failed" << endl;
+          server_socket_.close();
         }
       });
   }
@@ -350,6 +351,7 @@ private:
           do_client_write(length);
         } else {
           cout << "[!] (Server) Read failed" << server_endpoint_ << endl;
+          client_socket_.close();
         }
       });
   }
