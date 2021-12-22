@@ -26,6 +26,15 @@
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/lexical_cast.hpp>
 
+#ifdef DEBUG
+#define debug_log(x) \
+        do { \
+        x \
+        } while (0);
+#else
+#define debug_log(x)
+#endif
+
 using boost::asio::ip::tcp;
 using namespace std;
 
@@ -119,18 +128,18 @@ private:
           char *domain_name;
           char s_port[0x8] = { 0 };
 
-          debug_dump(data_, length);
+          debug_log(debug_dump(data_, length););
 
           // Parse SOCKS4_REQUEST
           if (length < 9) {
-            cout << "[!] Unexpected SOCKS4_REQUEST: Length error" << endl;
+            debug_log(cout << "[!] Unexpected SOCKS4_REQUEST: Length error" << endl;);
             return;
           }
 
           vn = data_[0];
 
           if (vn != 4) {
-            cout << "[!] Unexpected SOCKS4_REQUEST: VN error" << endl;
+            debug_log(cout << "[!] Unexpected SOCKS4_REQUEST: VN error" << endl;);
             return;
           }
 
@@ -148,22 +157,22 @@ private:
 
           // Recognize SOCKS4/4A
           if ((dstip & 0x00ffffff) == 0) {
-            cout << "[*] SOCKS4A request" << endl;
+            debug_log(cout << "[*] SOCKS4A request" << endl;);
 
             int idx = 8 + strlen(userid) + 1;
 
             if (idx >= (int)length) {
-              cout << "[!] Unexpected SOCKS4A_REQUEST: USERID error" << endl;
+              debug_log(cout << "[!] Unexpected SOCKS4A_REQUEST: USERID error" << endl;);
               return;
             }
 
             domain_name = &data_[idx];
 
-            cout << domain_name << ":" << s_port << endl;
+            debug_log(cout << domain_name << ":" << s_port << endl;);
 
             do_resolve(domain_name, s_port);
           } else {
-            cout << "[*] SOCKS4  request" << endl;
+            debug_log(cout << "[*] SOCKS4  request" << endl;);
 
             // Turn dstip from int to IP string (xxx.xxx.xxx.xxx)
             char s_dstip[0x10] = { 0 };
@@ -174,7 +183,7 @@ private:
                     (dstip >> 0x10) & 0xff,
                     (dstip >> 0x18) & 0xff);
 
-            cout << s_dstip << ":" << s_port << endl;
+            debug_log(cout << s_dstip << ":" << s_port << endl;);
 
             do_resolve(s_dstip, s_port);
           }
@@ -214,11 +223,11 @@ private:
         if (!ec) {
           // Verify the incoming end point is what it should be
           if (server_endpoint_.address().to_string() != socket.remote_endpoint().address().to_string()) {
-            cout << "[X] BIND - Other server connected (" << socket.remote_endpoint() << ")" << endl;
+            debug_log(cout << "[X] BIND - Other server connected (" << socket.remote_endpoint() << ")" << endl;);
             return;
           }
           
-          cout << "[O] BIND - Server connected (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[O] BIND - Server connected (" << server_endpoint_ << ")" << endl;);
           
           server_socket_ = tcp::socket(std::move(socket));
 
@@ -226,7 +235,7 @@ private:
           // Start proxing data from server to client
           do_SOCKS4_reply(1, int_to_port(port), proxy_ip);
         } else {
-          cout << "[x] BIND Accept error: " << ec << endl;
+          debug_log(cout << "[x] BIND Accept error: " << ec << endl;);
         }
       });
   }
@@ -386,14 +395,14 @@ private:
             break;
           }
 
-          cout << "[O] Resolve OK (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[O] Resolve OK (" << server_endpoint_ << ")" << endl;);
 
           // Check firewall
           int ok = firewall();
           
           if (ok == -1) {
             // Rejected
-            cout << "[!] Firewall rejected (" << server_endpoint_ << ")" << endl;
+            debug_log(cout << "[!] Firewall rejected (" << server_endpoint_ << ")" << endl;);
             do_SOCKS4_reply(0, 0, 0);
             return;
           }
@@ -406,7 +415,7 @@ private:
             do_bind();
           }
         } else {
-          cout << "[!] Resolve failed" << endl;
+          debug_log(cout << "[!] Resolve failed" << endl;);
           do_SOCKS4_reply(0, 0, 0);
         }
       });
@@ -420,10 +429,10 @@ private:
       [this, self](boost::system::error_code ec)
       {
         if (!ec) {
-          cout << "[O] Connect OK (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[O] Connect OK (" << server_endpoint_ << ")" << endl;);
           do_SOCKS4_reply(1, 0, 0);
         } else {
-          cout << "[!] Connect failed (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[!] Connect failed (" << server_endpoint_ << ")" << endl;);
           do_SOCKS4_reply(0, 0, 0);
         }
       });
@@ -439,12 +448,28 @@ private:
     reply.dstport = dstport;
     reply.dstip = dstip;
 
-    debug_dump((char *)&reply, sizeof(reply));
+    // Log
+    cout << "<S_IP>: " << client_socket_.remote_endpoint().address().to_string() << endl;
+    cout << "<S_PORT>: " << client_socket_.remote_endpoint().port() << endl;
+    cout << "<D_IP>: " << server_endpoint_.address().to_string() << endl;
+    cout << "<D_PORT>: " << server_endpoint_.port() << endl;
+    if (cd_ == 1) {
+      cout << "<Command>: CONNECT" << endl;
+    } else if (cd_ == 2) {
+      cout << "<Command>: BIND" << endl;
+    }
+    if (ok) {
+      cout << "<Reply>: Accept" << endl;
+    } else {
+      cout << "<Reply>: Reject" << endl;
+    }
+
+    debug_log(debug_dump((char *)&reply, sizeof(reply)););
 
     boost::asio::async_write(client_socket_, boost::asio::buffer((char *)&reply, sizeof(reply)),
       [this, self, ok](boost::system::error_code ec, std::size_t /*length*/) {
         if (!ec) {
-          cout << "[O] Reply OK (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[O] Reply OK (" << server_endpoint_ << ")" << endl;);
           
           if (ok) {
             if (cd_ == 1) {
@@ -462,7 +487,7 @@ private:
             }
           }
         } else {
-          cout << "[!] Reply failed (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[!] Reply failed (" << server_endpoint_ << ")" << endl;);
         }
       });
   }
@@ -473,10 +498,10 @@ private:
       [this, self](boost::system::error_code ec, std::size_t length)
       {
         if (!ec) {
-          // debug_dump(data_, length);
+          debug_log(debug_dump(data_, length););
           do_server_write(length);
         } else {
-          cout << "[!] (Client) Read failed" << endl;
+          debug_log(cout << "[!] (Client) Read failed" << endl;);
           server_socket_.close();
         }
       });
@@ -488,9 +513,9 @@ private:
     boost::asio::async_write(client_socket_, boost::asio::buffer(data2_, length),
       [this, self](boost::system::error_code ec, std::size_t /*length*/) {
         if (!ec) {
-          cout << "[O] (Client) Write OK (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[O] (Client) Write OK (" << server_endpoint_ << ")" << endl;);
         } else {
-          cout << "[!] (Client) Write failed (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[!] (Client) Write failed (" << server_endpoint_ << ")" << endl;);
         }
         do_server_read();
       });
@@ -502,10 +527,10 @@ private:
       [this, self](boost::system::error_code ec, std::size_t length)
       {
         if (!ec) {
-          // debug_dump(data2_, length);
+          debug_log(debug_dump(data2_, length););
           do_client_write(length);
         } else {
-          cout << "[!] (Server) Read failed" << server_endpoint_ << endl;
+          debug_log(cout << "[!] (Server) Read failed" << server_endpoint_ << endl;);
           client_socket_.close();
         }
       });
@@ -517,9 +542,9 @@ private:
     boost::asio::async_write(server_socket_, boost::asio::buffer(data_, length),
       [this, self](boost::system::error_code ec, std::size_t /*length*/) {
         if (!ec) {
-          cout << "[O] (Server) Write OK (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[O] (Server) Write OK (" << server_endpoint_ << ")" << endl;);
         } else {
-          cout << "[!] (Server) Write failed (" << server_endpoint_ << ")" << endl;
+          debug_log(cout << "[!] (Server) Write failed (" << server_endpoint_ << ")" << endl;);
         }
         do_client_read();
       });
@@ -588,11 +613,11 @@ private:
             std::make_shared<session>(std::move(socket), io_context_)->start();
           } else {
             // Error
-            cout << "[x] Fork error" << endl;
+            debug_log(cout << "[x] Fork error" << endl;);
             exit(1);
           }
         } else {
-          cout << "[x] Accept error" << endl;
+          debug_log(cout << "[x] Accept error" << endl;);
           do_accept();
         }
       });
@@ -608,7 +633,7 @@ int main(int argc, char* argv[])
   try
   {
     if (argc != 2) {
-      std::cout << "Usage: socks_server <port>\n";
+      cout << "Usage: socks_server <port>\n";
       return 1;
     }
 
@@ -620,7 +645,7 @@ int main(int argc, char* argv[])
   }
   catch (std::exception& e)
   {
-    std::cout << "Exception: " << e.what() << "\n";
+    debug_log(cout << "Exception: " << e.what() << "\n";);
   }
 
   return 0;

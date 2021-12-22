@@ -1,5 +1,8 @@
 CXX=g++
+
+# Add -DDEBUG for debug log
 CXXFLAGS=-std=c++11 -Wall -pedantic -pthread -lboost_system -lboost_filesystem -DBOOST_NO_CXX11_SCOPED_ENUMS
+
 CXX_INCLUDE_DIRS=/usr/local/include
 CXX_INCLUDE_PARAMS=$(addprefix -I , $(CXX_INCLUDE_DIRS))
 CXX_LIB_DIRS=/usr/local/lib
