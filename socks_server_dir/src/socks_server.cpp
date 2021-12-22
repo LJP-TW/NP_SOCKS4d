@@ -10,6 +10,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <fstream>
 #include <filesystem>
 #include <memory>
 #include <utility>
@@ -22,6 +23,8 @@
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/asio/signal_set.hpp>
+#include <boost/algorithm/string/trim.hpp>
+#include <boost/lexical_cast.hpp>
 
 using boost::asio::ip::tcp;
 using namespace std;
@@ -191,7 +194,8 @@ private:
     proxy_ip = ip_to_dword(client_socket_.local_endpoint().address().to_string());
 
     while (true) {
-      try {
+      try 
+      {
         p_acceptor_ = new tcp::acceptor(io_context_, tcp::endpoint(tcp::v4(), port));
         break;
       } 
@@ -227,6 +231,147 @@ private:
       });
   }
 
+  int firewall()
+  {
+    // Read socks.conf
+    string filename = "./socks.conf";
+    ifstream firewallfile(filename);
+
+    if (firewallfile.fail()) {
+      cerr << "[x] socks.conf doesn't exist" << endl;
+      cerr << "[*] socks.conf example:" << endl;
+      cerr << R""""(
+              # Allow comment
+              #
+              # format:
+              #   permit <command> <IPv4>
+              # command:
+              #   c: CONNECT
+              #   b: BIND
+              
+              # permit c 140.113.*.*
+              permit c *.*.*.*
+              permit b *.*.*.*
+              )"""" << endl;
+      return -1;
+    }
+
+    if (firewallfile.is_open()) {
+      string line;
+      while (getline(firewallfile, line)) {
+        vector<string> params;
+        vector<string> ips;
+        int command = 0;
+        int ip[4];
+        int dstip[4];
+
+        if (line[0] == '#') {
+          continue;
+        }
+
+        boost::algorithm::trim(line);
+
+        if (line.length() == 0) {
+          continue;
+        }
+
+        // permit <command> <ipv4>
+        // e.g.
+        //   permit c 140.130.*.*
+        
+        // Parse rule
+        // "ACTION COMMAND IP"
+        boost::split(params, line, boost::is_any_of(" "), boost::token_compress_on);
+        
+        if (params.size() != 3) {
+          cerr << "[*] socks.conf rule parse error:" << line << endl;
+          return -1;
+        }
+
+        if (params[0] != "permit") {
+          cerr << "[*] socks.conf rule parse error:" << line << endl;
+          return -1;
+        }
+
+        if (params[1].length() != 1) {
+          cerr << "[*] socks.conf rule parse error:" << line << endl;
+          return -1;
+        }
+
+        switch (params[1][0]) {
+          case 'c':
+            command = 1;
+            break;
+          case 'b':
+            command = 2;
+            break;
+          default:
+            cerr << "[*] socks.conf rule parse error:" << line << endl;
+            return -1;
+        }
+
+        // Parse IPv4
+        // "<number/*>.<number/*>.<number/*>.<number/*>"
+        boost::split(ips, params[2], boost::is_any_of("."), boost::token_compress_on);
+
+        if (ips.size() != 4) {
+          cerr << "[*] socks.conf rule parse error:" << line << endl;
+          return -1;
+        }
+
+        // Check COMMAND
+        if (cd_ != command) {
+          continue;
+        }
+
+        for (int i = 0; i < 4; ++i) {
+          try 
+          {
+            ip[i] = boost::lexical_cast<int>(ips[i]);
+            if (ip[i] < 0 || ip[i] > 255) {
+              cerr << "[*] socks.conf rule parse error:" << line << endl;
+              return -1;
+            }
+          } 
+          catch (std::exception& e) 
+          {
+            if (ips[i].length() == 1 && ips[i][0] == '*') {
+              ip[i] = -1;
+            }
+          }
+        }
+
+        boost::split(ips, server_endpoint_.address().to_string(), boost::is_any_of("."), boost::token_compress_on);
+
+        for (int i = 0; i < 4; ++i) {
+          dstip[i] = boost::lexical_cast<int>(ips[i]);
+        }
+
+        // Check dst IP
+        int check = 0;
+        for (; check < 4; ++check) {
+          if (ip[check] == -1) {
+            continue;
+          }
+          if (ip[check] == dstip[check]) {
+            continue;
+          }
+
+          break;
+        }
+
+        if (check == 4) {
+          // Accept
+          return 0;
+        }
+      }
+      firewallfile.close();
+    }
+
+    // Default policy: reject
+    return -1;
+  }
+
   void do_resolve(string hostname, string port)
   {
     auto self(shared_from_this());
@@ -242,6 +387,16 @@ private:
           }
 
           cout << "[O] Resolve OK (" << server_endpoint_ << ")" << endl;
+
+          // Check firewall
+          int ok = firewall();
+          
+          if (ok == -1) {
+            // Rejected
+            cout << "[!] Firewall rejected (" << server_endpoint_ << ")" << endl;
+            do_SOCKS4_reply(0, 0, 0);
+            return;
+          }
 
           if (cd_ == 1) {
             // CONNECT
