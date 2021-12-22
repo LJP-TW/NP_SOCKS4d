@@ -3,6 +3,10 @@
 # Learn more about .gitignore:
 #     https://www.atlassian.com/git/tutorials/saving-changes/gitignore
 
+# for testing
+http_work_dir/
+np_single_work_dir/
+
 # target binary
 socks_server
 hw4.cgi
