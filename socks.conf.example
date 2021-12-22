@@ -1,0 +1,12 @@
+# Allow comment
+#
+# format:
+#   permit <command> <IPv4>
+# command:
+#   c: CONNECT
+#   b: BIND
+
+# permit c 140.113.*.*
+permit c *.*.*.*
+permit b *.*.*.*
+
